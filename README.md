@@ -211,7 +211,7 @@ model-drift-watchdog/
 
 ```bash
 # 1. Clone
-git clone https://github.com/<your-username>/model-drift-watchdog.git
+git clone https://github.com/HarshSharma-28/model-drift-watchdog.git
 cd model-drift-watchdog
 
 # 2. Create a virtual environment
