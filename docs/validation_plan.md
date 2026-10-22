@@ -1,37 +1,83 @@
-# Validation Plan
+# Validation and Results
 
-The project uses synthetic data with **known, injected drift**, so every output can be checked against ground truth.
+The project uses synthetic data with **known, injected drift**, so every agent output can be checked
+against ground truth. Reproduce everything below with:
 
-## 1. Scenario ground truth
+```bash
+python validation.py      # results tables
+python -m pytest -q       # 25 automated tests
+```
 
-| Scenario | Injected change | Expected decision | Actual decision | Match |
-|---|---|---|---|---|
-| Normal week | None | No action | _to be filled after run_ | |
-| Gradual drift | Incomes +~20%, city tier shift | Alert | | |
-| Sudden drift | Gig-worker influx, lower credit scores | Retrain | | |
-| Pipeline bug | 40% `credit_score` missing | Fix pipeline | | |
+or press **Run validation suite** in the app's Validation tab.
 
-## 2. Feature-level detection
+## 1. Scenario ground truth — decision accuracy 8 / 8
 
-For each scenario, compare the features that were actually drifted with the features the Detector flagged, and report precision and recall of drift detection.
+| Scenario | Injected change | Labels | Expected | Agent decision | Match | Critic retries |
+|---|---|---|---|---|---|---|
+| Normal week | None | yes | No action | No action | ✅ | 0 |
+| Gradual drift | Incomes +20% (loan amounts follow), more tier-2/3 applicants | yes | Alert | Alert | ✅ | 1 |
+| Sudden drift | Gig-worker influx, lower credit scores, gig workers riskier | yes | Retrain | Retrain | ✅ | 0 |
+| Pipeline bug | 40% of `credit_score` missing | yes | Fix pipeline | Fix pipeline | ✅ | 0 |
+| Normal week | None | no | No action | No action | ✅ | 0 |
+| Gradual drift | as above | no | Alert | Alert | ✅ | 1 |
+| Sudden drift | as above | no | Retrain | Retrain | ✅ | 0 |
+| Pipeline bug | as above | no | Fix pipeline | Fix pipeline | ✅ | 0 |
+
+"Labels = no" simulates label delay: the decision is made from input and prediction drift alone.
+
+## 2. Feature-level detection — precision 100%, recall 100%
+
+A feature counts as *flagged* if its KS / Chi-square test is significant (p < 0.05) or its PSI ≥ 0.10.
+
+| Scenario | Injected features | Flagged features | Key numbers |
+|---|---|---|---|
+| Normal week | — | — | max PSI 0.005, prediction PSI 0.009 |
+| Gradual drift | monthly_income, loan_amount, city_tier | same | income PSI 0.136 (moderate); loan_amount PSI 0.085, significant → bootstrap re-check |
+| Sudden drift | credit_score, employment_type, monthly_income, loan_amount | same | credit_score PSI 0.887, employment_type PSI 0.637 (major); prediction PSI 0.863 |
+| Pipeline bug | credit_score (missing values) | same | 38.4% missing in the batch (limit 10%) |
 
 ## 3. Critic checks (live in the UI)
 
-- Sample size ≥ 500
-- KS and PSI agree on critical features
-- Decision consistent with policy
-- Retries ≤ 2, otherwise escalation
+| Check | If it fails |
+|---|---|
+| Sample size ≥ 500 | Profiler widens the window (doubles) |
+| KS/Chi² and PSI agree on critical features | Detector re-checks with a 300-sample bootstrap of PSI |
+| Never retrain on corrupted data | Decision agent revises |
+| Decision follows the policy (re-derived independently) | Decision agent revises |
+| Decision is backed by evidence | Decision agent revises |
 
-## 4. Model check
+Maximum 2 retries, then escalate to a human.
 
-In the Retrain scenario, the challenger model must beat the champion's AUC by at least 0.01 on a fresh hold-out set before it can be proposed for deployment.
+## 4. Robustness tests — 7 / 7 passed
 
-## 5. Human check
+| Test | What happened | Passed |
+|---|---|---|
+| Faulty first decision — Normal week | Naive 'Retrain' → Critic retry (decision) → No action | ✅ |
+| Faulty first decision — Gradual drift | Naive 'Retrain' → Critic retry (detector, then decision) → Alert | ✅ |
+| Faulty first decision — Sudden drift | Naive 'No action' → Critic retry (decision) → Retrain | ✅ |
+| Faulty first decision — Pipeline bug | Naive 'Retrain' on broken data → Critic blocks it → Fix pipeline | ✅ |
+| Small batch (300 rows) | Window widened to 600 rows → No action | ✅ |
+| Tiny batch (100 rows) | 400 rows after 2 retries → escalated to human, no retrain | ✅ |
+| LangGraph vs fallback runner | Identical decision and path | ✅ |
 
-No model is deployed without an explicit Approve click in the UI.
+## 5. Model check — champion vs challenger (Sudden drift)
 
-## Success criteria
+| Model | AUC (2,000 fresh rows) | Accuracy |
+|---|---|---|
+| Champion (deployed) | 0.742 | 0.719 |
+| Challenger (retrained on reference + 1,000 recent labelled rows, recent ×3) | **0.768** | 0.726 |
+| Gain | **+0.026** (bar: ≥ 0.01) → eligible | |
 
-- 4 / 4 scenarios produce the expected decision.
-- The Pipeline-bug scenario is **not** sent for retraining.
-- In the Sudden-drift scenario, the retrained model recovers lost AUC.
+On the monitored batch the champion's accuracy had fallen from 83.5% (baseline) to 71.6%.
+
+## 6. Human check
+
+No model is deployed without an explicit **Approve & deploy** click. Approved models are recorded in the
+model registry (v1 → v2), and later monitoring runs use the new champion.
+
+## Success criteria — all met
+
+- [x] 4 / 4 scenarios produce the expected decision (8 / 8 including label-delay runs)
+- [x] The Pipeline-bug scenario is **not** sent for retraining
+- [x] In the Sudden-drift scenario, the retrained model beats the champion on fresh data
+- [x] The Critic catches every injected faulty decision and escalates when evidence stays insufficient

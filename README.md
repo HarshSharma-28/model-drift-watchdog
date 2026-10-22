@@ -8,7 +8,8 @@
 ![scikit-learn](https://img.shields.io/badge/scikit--learn-ML-F7931E?logo=scikitlearn&logoColor=white)
 ![Ollama](https://img.shields.io/badge/Ollama-optional%20local%20LLM-000000)
 ![License](https://img.shields.io/badge/License-MIT-green)
-![Status](https://img.shields.io/badge/Status-PoC%20in%20development-F59E0B)
+![Status](https://img.shields.io/badge/Status-Working%20PoC-22C55E)
+![Tests](https://img.shields.io/badge/tests-25%20passing-22C55E)
 
 > **CA-3: Domain-Specific Agentic AI Proof of Concept**
 > Symbiosis Institute of Technology, Pune
@@ -34,9 +35,10 @@
 8. [Tech stack](#8-tech-stack)
 9. [Project structure](#9-project-structure)
 10. [Getting started](#10-getting-started)
-11. [Validation plan](#11-validation-plan)
+11. [Validation and results](#11-validation-and-results)
 12. [Limitations and future scope](#12-limitations-and-future-scope)
 13. [Roadmap](#13-roadmap)
+14. [Demo guide (5-minute presentation)](#14-demo-guide-5-minute-presentation)
 
 ---
 
@@ -160,8 +162,8 @@ Features: `age`, `monthly_income`, `loan_amount`, `credit_score`, `employment_ty
 | # | Scenario | What's injected | Expected outcome |
 |---|---|---|---|
 | 1 | Normal week | Nothing | ✅ No action |
-| 2 | Gradual drift | Incomes up ~20%, city tier shifts slightly | ⚠️ Alert |
-| 3 | Sudden drift | Large influx of gig workers, lower credit scores | 🔁 Retrain → challenger wins → human approves |
+| 2 | Gradual drift | Incomes up ~20% (loan amounts follow), city tier shifts slightly | ⚠️ Alert |
+| 3 | Sudden drift | Large influx of gig workers, lower credit scores — and gig workers now default more (concept change) | 🔁 Retrain → challenger wins → human approves |
 | 4 | Pipeline bug | 40% of `credit_score` values missing | 🛠️ Fix pipeline (**not** retrain) |
 
 Scenario 4 is the key test: a naive system would retrain on broken data — our agents don't.
@@ -186,24 +188,25 @@ No paid APIs are used.
 ```
 model-drift-watchdog/
 ├── app.py                  # Streamlit UI (entry point)
-├── data_gen.py             # Synthetic data + 4 drift scenarios
-├── state.py                # Shared state passed between agents
+├── data_gen.py             # Synthetic loan data, 4 drift scenarios, champion model
 ├── policy.py               # Locked thresholds and decision rules
-├── graph.py                # LangGraph orchestration (+ fallback runner)
-├── llm.py                  # Ollama client + mock LLM
+├── state.py                # Shared state passed between agents
+├── graph.py                # LangGraph orchestration (+ identical fallback runner)
+├── runner.py               # Builds the inputs for one run and executes it
+├── llm.py                  # Ollama client + mock LLM fallback
+├── validation.py           # Validation suite (also runs from the UI)
 ├── agents/
-│   ├── planner.py          # Planner Agent
-│   ├── profiler.py         # Data Profiler Agent
-│   ├── detector.py         # Drift Detector Agent
-│   ├── decision.py         # Decision Agent
-│   ├── critic.py           # Critic Agent
-│   └── reporter.py         # Reporter / Action Agent
-├── data/                   # Generated datasets (git-ignored)
-├── models/                 # Trained champion / challenger models (git-ignored)
-├── docs/                   # Problem statement, architecture, validation plan
+│   ├── planner.py          # Planner Agent — plan + re-plan
+│   ├── profiler.py         # Data Profiler — quality checks, wider window on request
+│   ├── detector.py         # Drift Detector — KS, Chi², PSI, prediction drift, bootstrap
+│   ├── decision.py         # Decision Agent — applies the policy
+│   ├── critic.py           # Critic Agent — 5 checks, retries, escalation
+│   ├── reporter.py         # Reporter / Action — report, alert, incident, retrain
+│   └── common.py           # Trace logging helpers
+├── tests/                  # 25 pytest tests (all scenarios + Critic loop)
+├── docs/                   # Problem statement, architecture, validation, demo guide
 ├── presentation/           # PPT for the CA-3 presentation
-├── tests/                  # Validation tests
-├── .streamlit/config.toml  # UI theme
+├── .streamlit/config.toml  # Dark theme
 └── requirements.txt
 ```
 
@@ -214,9 +217,9 @@ model-drift-watchdog/
 git clone https://github.com/HarshSharma-28/model-drift-watchdog.git
 cd model-drift-watchdog
 
-# 2. Create a virtual environment
+# 2. Create a virtual environment (Python 3.10+)
 python -m venv .venv
-# Windows:  .venv\Scripts\activate
+# Windows:      .venv\Scripts\activate
 # macOS/Linux:  source .venv/bin/activate
 
 # 3. Install dependencies
@@ -226,7 +229,16 @@ pip install -r requirements.txt
 streamlit run app.py
 ```
 
-**Optional — local LLM explanations with Ollama**
+The app opens at http://localhost:8501. The first load takes a few seconds while the champion model is trained.
+
+**Run the tests and the validation suite**
+
+```bash
+python -m pytest -q        # 25 tests
+python validation.py       # prints the results tables below
+```
+
+**Optional — local LLM explanations with Ollama (free)**
 
 ```bash
 # Install Ollama from https://ollama.com, then:
@@ -234,14 +246,65 @@ ollama pull llama3.2:3b
 ```
 
 If Ollama isn't running, the app automatically uses the mock LLM, so the demo works on any laptop.
+Use `OLLAMA_MODEL` / `OLLAMA_URL` environment variables to pick a different model or server.
 
-## 11. Validation plan
+### Using the app
 
-1. **Ground truth** — we know which drift was injected, so we compare each agent decision with the expected outcome for all 4 scenarios.
-2. **Detection check** — truly drifted features vs features the Detector flagged.
-3. **Critic checks** — sample size, test agreement and policy consistency, shown live in the UI.
-4. **Model check** — the challenger must beat the champion on fresh data before deployment.
-5. **Human check** — nothing is deployed without approval.
+| Sidebar control | What it does |
+|---|---|
+| Production batch scenario | Picks one of the 4 synthetic scenarios |
+| True loan outcomes available | Adds the accuracy/AUC check (off = label delay, input drift only) |
+| Use local LLM (Ollama) | Plain-English explanation from Ollama; falls back to the mock |
+| Demo controls → Batch size | Below 500 rows the Critic asks for a wider window; 100 rows escalates |
+| Demo controls → Inject a faulty first decision | The Decision agent's first call is naive — watch the Critic catch it |
+| Demo controls → Orchestrator | LangGraph or the plain-Python fallback (identical results) |
+
+| Tab | Shows |
+|---|---|
+| 🧭 Agent Trace | The path taken through the graph (retries highlighted), the task plan and every agent step |
+| 📡 Drift Analysis | PSI per feature, prediction drift, test table with p-values, distributions, performance |
+| 🛡️ Decision & Critic | Decision, rule fired, evidence, policy table, every Critic round with pass/fail |
+| 📝 Report & Action | Plain-English summary, report download, alert, incident, champion vs challenger, **Approve / Reject**, model registry |
+| ✅ Validation | Runs the full validation suite against ground truth |
+
+### Screenshots
+
+| Agent trace (Sudden drift) | Drift analysis |
+|---|---|
+| ![Agent trace](docs/screenshots/1_agent_trace.png) | ![Drift analysis](docs/screenshots/2_drift_analysis.png) |
+| **Decision & Critic (Pipeline bug + injected fault)** | **Report & Action (champion vs challenger)** |
+| ![Decision and Critic](docs/screenshots/3_decision_critic.png) | ![Report and action](docs/screenshots/4_report_action.png) |
+
+## 11. Validation and results
+
+Every scenario has a known, injected change, so the agents' output is checked against ground truth
+(`python validation.py`, or the **Validation** tab).
+
+**Decision accuracy — 8 / 8** (4 scenarios × labels on/off)
+
+| Scenario | Expected | Agent decision | Critic retries | Detection precision / recall | Retrain AUC gain |
+|---|---|---|---|---|---|
+| Normal week | No action | ✅ No action | 0 | 100% / 100% | — |
+| Gradual drift | Alert | ✅ Alert | 1 (bootstrap re-check of `loan_amount`) | 100% / 100% | — |
+| Sudden drift | Retrain | ✅ Retrain | 0 | 100% / 100% | **+0.026** (0.742 → 0.768) |
+| Pipeline bug | Fix pipeline | ✅ Fix pipeline | 0 | 100% / 100% | — (not retrained) |
+
+Identical decisions with labels switched off: the system works under label delay.
+
+**Robustness tests — 7 / 7 passed**
+
+| Test | Result |
+|---|---|
+| Faulty first decision (×4 scenarios) | Critic caught it every time and sent it back; final decision correct |
+| Small batch (300 rows) | Critic asked for more data → window widened to 600 rows → No action |
+| Tiny batch (100 rows) | Window reached 400 rows after 2 retries → **escalated to a human**, nothing acted on |
+| LangGraph vs fallback runner | Same decision and same path for every scenario |
+
+Key observations:
+- **Pipeline bug is never retrained.** The Planner re-plans, drift tests are skipped, and the Critic's "never retrain on corrupted data" check blocks a naive retrain.
+- **Sudden drift:** accuracy fell from 83.5% to 71.6%; the retrained challenger beat the champion on 2,000 fresh rows, and is deployed only after a human clicks Approve.
+- **Gradual drift:** `loan_amount` was statistically significant but its PSI (0.085) was below 0.10. The Critic flagged the disagreement and the Detector settled it with a 300-sample bootstrap.
+- A full monitoring cycle takes about 1 second.
 
 Details: [`docs/validation_plan.md`](docs/validation_plan.md)
 
@@ -265,13 +328,21 @@ Details: [`docs/validation_plan.md`](docs/validation_plan.md)
 
 - [x] Problem statement, domain and architecture finalised
 - [x] Repository and project structure set up
-- [ ] Synthetic data generator with 4 scenarios
-- [ ] Agents: Planner, Profiler, Detector, Decision, Critic, Reporter
-- [ ] LangGraph orchestration with retries and escalation
-- [ ] Streamlit UI: agent trace, drift analysis, decision & critic, report & action, validation
-- [ ] Ollama integration with mock fallback
-- [ ] Validation run across all scenarios
+- [x] Synthetic data generator with 4 scenarios
+- [x] Agents: Planner, Profiler, Detector, Decision, Critic, Reporter
+- [x] LangGraph orchestration with re-planning, retries and escalation
+- [x] Streamlit UI: agent trace, drift analysis, decision & critic, report & action, validation
+- [x] Ollama integration with mock fallback
+- [x] Validation run across all scenarios (8/8 decisions, 7/7 robustness tests)
 - [ ] Final presentation and demo
+
+## 14. Demo guide (5-minute presentation)
+
+See [`docs/demo_guide.md`](docs/demo_guide.md) for a click-by-click script. In short:
+1. **Normal week** → ✅ No action (show the clean path in Agent Trace)
+2. **Sudden drift** → 🔁 Retrain → Report & Action → champion vs challenger → **Approve**
+3. **Pipeline bug** + *Inject a faulty first decision* → the Critic blocks a retrain on broken data → 🛠️ Fix pipeline
+4. **Validation** tab → 8/8 and 7/7
 
 ---
 

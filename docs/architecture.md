@@ -42,47 +42,63 @@ flowchart TD
 - **Output:** ordered task plan.
 
 ### 🔎 Data Profiler (Research)
-- **Input:** reference data, production batch.
-- **Does:** schema comparison, missing-value rates, sample size, summary statistics per feature.
+- **Input:** reference data, recent production data (newest first).
+- **Does:** schema comparison, missing-value rates, sample size, summary statistics per feature. When the Critic asks for more data, it **doubles the window** (reads further back into recent production data).
 - **Output:** data quality report with a `data_ok` flag.
 
 ### 📡 Drift Detector (Executor)
 - **Input:** task plan, both datasets, champion model.
-- **Does:** per-feature KS / Chi-square p-values and PSI, prediction-distribution PSI, and accuracy/AUC drop when labels exist. On a Critic request, re-checks disputed features with a bootstrap test.
+- **Does:** per-feature KS / Chi-square p-values and PSI, prediction-distribution PSI on the champion's risk scores, and accuracy/AUC vs the deployment baseline when labels exist. On a Critic request, re-checks disputed features with a **300-sample bootstrap** of PSI: if the 95% interval is below 0.10 the change is too small to matter; above 0.10 it is confirmed; in between it is treated as moderate (conservative).
 - **Output:** drift table with severity per feature.
 
 ### 🔀 Decision Agent (Business Automation)
-- **Input:** drift table, data quality report.
-- **Does:** applies the locked policy (see below) and records which rule fired.
+- **Input:** drift table, data quality report, performance.
+- **Does:** applies the locked policy (see below) and records which rule fired and the evidence.
 - **Output:** one action — No action, Alert, Retrain or Fix pipeline — plus the triggering rule.
+- **Demo option:** "Inject a faulty first decision" makes the first call a naive rule, so the Critic can be shown catching it.
 
 ### 🛡️ Critic Agent (Critic)
 - **Input:** full state.
-- **Does:** verifies sample size, agreement between KS and PSI on critical features, and consistency between the decision and the policy. Sends work back to the right agent (max 2 retries), then escalates to a human if checks still fail.
-- **Output:** approve / retry(target) / escalate, with a pass/fail checklist.
+- **Does:** runs 5 checks — sample size, KS/PSI agreement on critical features, never retrain on corrupted data, decision follows the policy (re-derived independently), decision backed by evidence. The first failing check decides where work goes back (Profiler / Detector / Decision). Max 2 retries, then escalates to a human.
+- **Output:** approve / retry(target) / escalate, with a pass/fail checklist per round.
 
 ### 📝 Reporter / Action Agent (Executor + Business Automation)
-- **Input:** approved state.
-- **Does:** writes a plain-English report and an alert message (Ollama if available, otherwise template-based mock). On Retrain, trains a challenger on recent data and compares it with the champion on a fresh hold-out set.
-- **Output:** report, alert, champion vs challenger comparison.
+- **Input:** approved (or escalated) state.
+- **Does:** writes the drift report and a plain-English explanation (Ollama if available, otherwise template-based mock), routes an alert to the right team, opens an incident ticket for pipeline problems. On Retrain, trains a challenger on reference + recent labelled data (recent rows weighted 3×) and compares it with the champion on 2,000 fresh rows.
+- **Output:** report, alert, incident, champion vs challenger comparison.
 
 ### 👤 Human Approver
-- Approves or rejects deployment. Nothing is deployed automatically.
+- Approves or rejects deployment in the UI. Approved models go into the model registry (v1 → v2) and become the new champion. Escalations are acknowledged and assigned. Nothing is deployed automatically.
 
 ## Shared state
 
+Defined in [`state.py`](../state.py). Each agent returns only the keys it changes.
+
 | Field | Written by | Description |
 |---|---|---|
-| `scenario`, `reference_df`, `production_df` | UI | Inputs for the run |
-| `labels_available` | UI | Whether the production batch has true labels |
-| `plan` | Planner | Ordered list of tasks |
-| `quality_report` | Profiler | Schema, missing rates, sample size, `data_ok` |
-| `drift_results` | Detector | Per-feature tests, PSI, severity, prediction drift, performance |
-| `decision`, `decision_rule` | Decision | Recommended action and the rule that triggered it |
-| `critic_verdict`, `critic_checks` | Critic | approve / retry / escalate and the checklist |
-| `retry_count`, `retry_target` | Critic | Loop control (max 2) |
-| `report`, `alert`, `model_comparison` | Reporter | Final outputs |
-| `trace` | All agents | Step-by-step log shown in the UI |
+| `scenario`, `reference_df`, `production_pool`, `champion`, `baseline_metrics` | UI / runner | Inputs for the run |
+| `labels_available`, `batch_size`, `use_llm`, `inject_faulty_decision` | UI | Run settings |
+| `plan`, `replanned` | Planner | Ordered task list; whether it re-planned |
+| `window_size`, `production_df`, `quality_report` | Profiler | Monitored rows; schema, missing rates, sample size, `data_ok` |
+| `drift_table`, `prediction_drift`, `performance`, `bootstrap_features` | Detector | Per-feature tests, PSI, severity, prediction drift, accuracy/AUC |
+| `decision`, `decision_rule`, `decision_evidence`, `decision_round` | Decision | Recommended action, rule and evidence |
+| `critic_verdict`, `critic_checks`, `critic_history` | Critic | approve / retry / escalate and every round's checklist |
+| `retry_count`, `retry_target`, `escalated` | Critic | Loop control (max 2) |
+| `report`, `explanation`, `alert`, `incident`, `model_comparison`, `challenger` | Reporter | Final outputs |
+| `trace`, `path` | All agents | Step-by-step log and the nodes visited, shown in the UI |
+
+## Orchestration
+
+[`graph.py`](../graph.py) builds a LangGraph `StateGraph` with 7 nodes. Two routing functions drive the
+conditional edges and are shared with a plain-Python fallback runner, so both engines give identical results
+(this is tested).
+
+| From | Condition | To |
+|---|---|---|
+| Profiler | `data_ok` | Detector |
+| Profiler | data-quality issue | Planner (re-plan) → Decision |
+| Critic | approve or escalate | Reporter |
+| Critic | retry | Profiler / Detector / Decision |
 
 ## Decision policy
 
