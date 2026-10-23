@@ -26,3 +26,6 @@ Thumbs.db
 
 # Office temp files
 ~$*
+
+# Windows launcher artefacts
+setup_log.txt

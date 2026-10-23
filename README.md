@@ -229,6 +229,8 @@ pip install -r requirements.txt
 streamlit run app.py
 ```
 
+**Windows shortcut:** double-click `run_app.bat`. It finds Python, creates `.venv`, installs everything on the first run, and opens the app.
+
 The app opens at http://localhost:8501. The first load takes a few seconds while the champion model is trained.
 
 **Run the tests and the validation suite**
