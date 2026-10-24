@@ -9,7 +9,10 @@
 ![Ollama](https://img.shields.io/badge/Ollama-optional%20local%20LLM-000000)
 ![License](https://img.shields.io/badge/License-MIT-green)
 ![Status](https://img.shields.io/badge/Status-Working%20PoC-22C55E)
+[![Open in Streamlit](https://static.streamlit.io/badges/streamlit_badge_black_white.svg)](https://model-drift-watchdog.streamlit.app/)
 ![Tests](https://img.shields.io/badge/tests-25%20passing-22C55E)
+
+### 🚀 Live demo: **[model-drift-watchdog.streamlit.app](https://model-drift-watchdog.streamlit.app/)**
 
 > **CA-3: Domain-Specific Agentic AI Proof of Concept**
 > Symbiosis Institute of Technology, Pune
