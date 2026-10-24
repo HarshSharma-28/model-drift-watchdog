@@ -17,6 +17,7 @@ catching it and sending it back.
 from __future__ import annotations
 
 from agents.common import fmt_pct, log
+from knowledge import cite
 from policy import (ALERT, FIX_PIPELINE, MAX_ACCURACY_DROP, NO_ACTION, PSI_MAJOR, RETRAIN)
 
 
@@ -77,13 +78,22 @@ def decide(state: dict) -> dict:
     if faulty:
         summary += " ⚠️ Fault injected for the demo."
 
+    refs, used = state.get("kb_refs", []), []
+    refs, i = cite(refs, "Decision Agent", "decision policy thresholds retrain alert",
+                   "Policy rule applied", category="policy")
+    used.append(i)
+    if any("critical feature" in e for e in evidence):
+        refs, i = cite(refs, "Decision Agent", "critical features credit score income",
+                       "Drift is on a critical feature", category="policy")
+        used.append(i)
     return {
+        "kb_refs": refs,
         "decision": decision,
         "decision_rule": rule,
         "decision_evidence": evidence,
         "decision_round": round_no,
         "retry_target": None if revising else state.get("retry_target"),
         "trace": log(state, "Decision Agent", action, summary, "warn" if faulty else "ok",
-                     {"decision": decision, "rule": rule, "evidence": evidence, "round": round_no}),
+                     {"decision": decision, "rule": rule, "evidence": evidence, "round": round_no}, kb=used),
         "path": state.get("path", []) + ["decision"],
     }

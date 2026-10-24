@@ -20,10 +20,18 @@ import pandas as pd
 
 from agents.common import fmt_pct, log
 from data_gen import FEATURES, build_model, evaluate, generate_holdout
+from knowledge import cite, get_kb, recall, remember
 from llm import explain
 from policy import ALERT, FIX_PIPELINE, MIN_AUC_GAIN, NO_ACTION, RETRAIN, TARGET
 
 RECENT_WEIGHT = 3.0   # recent rows count 3x when retraining
+
+RUNBOOK_QUERY = {
+    NO_ACTION: "runbook no action stable",
+    ALERT: "runbook alert moderate drift",
+    RETRAIN: "runbook retrain major drift challenger approval",
+    FIX_PIPELINE: "runbook fix pipeline missing values",
+}
 
 ALERT_ROUTING = {
     NO_ACTION: ("ℹ️", "info", "Logged only — no one paged"),
@@ -65,7 +73,7 @@ def retrain_and_compare(state: dict) -> dict:
     }
 
 
-def _facts(state: dict) -> str:
+def _facts(state: dict, runbook=None) -> str:
     lines = [f"Scenario monitored: {state['scenario']}", f"Rows checked: {state['quality_report']['rows']}"]
     if not state["quality_report"]["data_ok"]:
         lines.append("Data-quality issues: " + "; ".join(state["quality_report"]["issues"]))
@@ -78,6 +86,8 @@ def _facts(state: dict) -> str:
             lines.append(f"Accuracy {fmt_pct(p['current_accuracy'])} vs baseline {fmt_pct(p['baseline_accuracy'])}")
     lines.append(f"Decision: {state['decision']} ({state['decision_rule']})")
     lines.append("Critic: " + ("escalated to human" if state.get("escalated") else "approved"))
+    if runbook is not None:
+        lines.append(f"Runbook {runbook.id} ({runbook.title}) steps: " + " | ".join(runbook.steps))
     return "\n".join(lines)
 
 
@@ -110,7 +120,7 @@ def _mock_explanation(state: dict, comparison: dict | None) -> str:
     return text
 
 
-def _report_markdown(state: dict, comparison: dict | None) -> str:
+def _report_markdown(state: dict, comparison: dict | None, runbook=None, refs=None, memory=None) -> str:
     q = state["quality_report"]
     out = [f"#### Drift report — {state['scenario']}",
            f"**Decision:** {state['decision']}" + (" (escalated to human)" if state.get("escalated") else ""),
@@ -134,6 +144,15 @@ def _report_markdown(state: dict, comparison: dict | None) -> str:
         out.append(f"**Champion vs challenger (fresh data):** AUC {comparison['champion']['auc']:.3f} → "
                    f"{comparison['challenger']['auc']:.3f} (gain {comparison['auc_gain']:+.3f}; "
                    f"{'eligible' if comparison['eligible'] else 'not eligible'} for deployment)")
+    if runbook is not None and runbook.steps:
+        steps = "\n".join(f"{n}. {s}" for n, s in enumerate(runbook.steps, 1))
+        out.append(f"**Recommended steps — Runbook {runbook.id} ({runbook.title}):**\n\n{steps}")
+    if memory:
+        out.append("**Agent memory — similar past runs:** " + "; ".join(
+            f"{m['time']} · {m['scenario']} → {m['decision']}" for m in memory))
+    if refs:
+        ids = sorted({r["id"] for r in refs})
+        out.append("**Knowledge base references:** " + ", ".join(f"[{i}] {get_kb().get(i).title}" for i in ids))
     return "\n\n".join(out)
 
 
@@ -146,8 +165,38 @@ def report(state: dict) -> dict:
         result = retrain_and_compare(state)
         comparison, challenger = result["comparison"], result["challenger_model"]
 
+    # ---- Knowledge base retrieval ------------------------------------------
+    refs, used = state.get("kb_refs", []), []
+    rb_query = "escalation human review insufficient evidence" if escalated else RUNBOOK_QUERY[decision]
+    refs, rb_id = cite(refs, "Reporter / Action", rb_query, "Runbook for the recommended action", category="runbook")
+    used.append(rb_id)
+    runbook = get_kb().get(rb_id) if rb_id else None
+    drifted = ([r["feature"] for r in state["drift_table"] if r["severity"] != "stable"]
+               if state["quality_report"]["data_ok"] and state.get("drift_table") else [])
+    if drifted:
+        refs, i = cite(refs, "Reporter / Action", "data drift input distribution", "Explains what drift means")
+        used.append(i)
+    if "employment_type" in drifted:
+        refs, i = cite(refs, "Reporter / Action", "gig workers thin credit file", "Employment mix shifted")
+        used.append(i)
+    if comparison:
+        refs, i = cite(refs, "Reporter / Action", "champion challenger fresh data", "Retrain evaluation method")
+        used.append(i)
+        refs, i = cite(refs, "Reporter / Action", "deployment approval auc gain registry", "Deployment rule", category="policy")
+        used.append(i)
+
+    # ---- Agent memory --------------------------------------------------------
+    memory_hits = []
+    if state.get("use_memory"):
+        memory_hits = recall(decision, drifted)
+        remember({"scenario": state["scenario"], "decision": decision, "drifted": drifted,
+                  "retries": state.get("retry_count", 0), "escalated": escalated,
+                  "rows": state["quality_report"]["rows"]})
+
     fallback = _mock_explanation(state, comparison)
-    explanation, source = explain(_facts(state), fallback, use_llm=state.get("use_llm", True))
+    if runbook is not None and runbook.steps:
+        fallback += f" Next step (Runbook {runbook.id}): {runbook.steps[0]}"
+    explanation, source = explain(_facts(state, runbook), fallback, use_llm=state.get("use_llm", True))
 
     icon, level, route = ALERT_ROUTING[decision]
     if escalated:
@@ -176,10 +225,17 @@ def report(state: dict) -> dict:
                     f"({'eligible' if comparison['eligible'] else 'not eligible'} — awaiting human approval).")
     if incident:
         summary += f" Opened incident {incident['id']} for {incident['owner']}."
+    if runbook is not None:
+        summary += f" Followed Runbook {runbook.id}."
+    if memory_hits:
+        summary += f" Memory: {len(memory_hits)} similar past run(s)."
     summary += f" Explanation by {'Ollama' if source.startswith('ollama') else 'mock LLM'}."
 
     return {
-        "report": _report_markdown(state, comparison),
+        "report": _report_markdown(state, comparison, runbook, refs, memory_hits),
+        "kb_refs": refs,
+        "memory_hits": memory_hits,
+        "runbook_id": rb_id,
         "explanation": explanation,
         "explanation_source": source,
         "alert": alert,
@@ -188,6 +244,6 @@ def report(state: dict) -> dict:
         "challenger": challenger,
         "trace": log(state, "Reporter / Action", "Reported & acted", summary, "ok",
                      {"alert_route": route, "explanation_source": source,
-                      "auc_gain": round(comparison["auc_gain"], 4) if comparison else None}),
+                      "auc_gain": round(comparison["auc_gain"], 4) if comparison else None}, kb=used),
         "path": state.get("path", []) + ["reporter"],
     }

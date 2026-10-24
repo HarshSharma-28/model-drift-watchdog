@@ -16,6 +16,7 @@ At most 2 retries; if checks still fail, the run is escalated to a human.
 from __future__ import annotations
 
 from agents.common import log
+from knowledge import cite
 from policy import (ALERT, FIX_PIPELINE, MAX_ACCURACY_DROP, MAX_RETRIES, MIN_SAMPLE_SIZE,
                     NO_ACTION, PSI_MAJOR, PSI_MODERATE, RETRAIN)
 
@@ -111,6 +112,15 @@ def review(state: dict) -> dict:
                    "Escalating to a human — no automatic action will be taken.")
         update["escalated"] = True
 
+    refs, used = state.get("kb_refs", []), []
+    refs, i = cite(refs, "Critic Agent", "critic validation retry escalation rules", "Validation rules", category="policy")
+    used.append(i)
+    if verdict == "escalate":
+        refs, i = cite(refs, "Critic Agent", "escalation human review insufficient evidence",
+                       "Escalation procedure", category="runbook")
+        used.append(i)
+    update["kb_refs"] = refs
+
     history.append({"round": len(history) + 1, "verdict": verdict, "target": target,
                     "decision": state["decision"], "checks": checks})
     update.update({
@@ -120,7 +130,8 @@ def review(state: dict) -> dict:
         "retry_target": target,
         "trace": log(state, "Critic Agent", {"approve": "Approved", "retry": "Sent back for retry",
                                              "escalate": "Escalated to human"}[verdict],
-                     summary, status, {"failed_checks": [c["check"] for c in failed], "retry_count": update.get("retry_count", retries)}),
+                     summary, status, {"failed_checks": [c["check"] for c in failed], "retry_count": update.get("retry_count", retries)},
+                     kb=used),
         "path": state.get("path", []) + ["critic"],
     })
     return update

@@ -20,6 +20,7 @@ import streamlit as st
 from agents.common import AGENT_META
 from data_gen import SCENARIOS, evaluate
 from graph import LANGGRAPH_AVAILABLE
+from knowledge import CATEGORIES, clear_memory, get_kb, load_memory
 from llm import OLLAMA_MODEL, ollama_status
 from policy import (ALERT, CRITICAL_FEATURES, FIX_PIPELINE, MAX_ACCURACY_DROP, MAX_MISSING_RATE,
                     MAX_RETRIES, MIN_AUC_GAIN, MIN_SAMPLE_SIZE, NO_ACTION, P_VALUE_ALPHA,
@@ -151,6 +152,8 @@ with st.sidebar:
                                     "Very small batches escalate to a human after 2 retries.")
         faulty = st.checkbox("Inject a faulty first decision",
                              help="The Decision agent's first call uses a naive rule. Watch the Critic catch it.")
+        use_memory = st.toggle("Agent memory (remember past runs)", value=True,
+                               help="The Reporter recalls similar past runs from the run history.")
         engine_label = st.radio("Orchestrator", ["LangGraph", "Fallback runner"], horizontal=True,
                                 index=0 if LANGGRAPH_AVAILABLE else 1, disabled=not LANGGRAPH_AVAILABLE)
 
@@ -172,6 +175,7 @@ if run:
         res = run_scenario(
             scenario, labels_available=labels, batch_size=batch_size, use_llm=use_llm,
             inject_faulty_decision=faulty,
+            use_memory=use_memory,
             engine="langgraph" if engine_label == "LangGraph" else "fallback",
             champion=ss.champion, baseline=ss.baseline,
         )
@@ -195,6 +199,7 @@ NODE_LABELS = {
     "ui": "🖥️ Streamlit UI", "planner": "🧭 Planner", "profiler": "🔎 Data Profiler",
     "replanner": "🧭 Planner\\n(re-plan)", "detector": "📡 Drift Detector", "decision": "🔀 Decision Agent",
     "critic": "🛡️ Critic Agent", "reporter": "📝 Reporter / Action", "human": "👤 Human approval",
+    "kb": "📚 Knowledge Base\\n(concepts · policy · runbooks)",
 }
 STATIC_EDGES = [("ui", "planner", ""), ("planner", "profiler", ""), ("profiler", "detector", "data OK"),
                 ("profiler", "replanner", "bad data"), ("replanner", "decision", "Fix pipeline"),
@@ -212,13 +217,14 @@ def graph_dot(path: list[str] | None = None) -> str:
         if "reporter" in visited:
             transitions[("reporter", "human")] += 1
             visited.add("human")
+        visited.add("kb")
     lines = ['digraph G {', 'bgcolor="transparent"; rankdir=TB; nodesep=0.35; ranksep=0.35;',
              'node [shape=box style="rounded,filled" fontname="Helvetica" fontsize=11 fontcolor="#E5E7EB" '
              'color="#334155" fillcolor="#111A2E" penwidth=1.4];',
              'edge [fontname="Helvetica" fontsize=9 color="#475569" fontcolor="#9CA3AF" arrowsize=0.7];']
     for n, label in NODE_LABELS.items():
         if path and n in visited:
-            fill = "#0F3D3A" if n not in ("critic",) else "#2E1F4F"
+            fill = {"critic": "#2E1F4F", "kb": "#2A2350"}.get(n, "#0F3D3A")
             lines.append(f'{n} [label="{label}" fillcolor="{fill}" color="{TEAL}" penwidth=2.2];')
         elif path:
             lines.append(f'{n} [label="{label}" fontcolor="#64748B" color="#1E293B"];')
@@ -233,6 +239,10 @@ def graph_dot(path: list[str] | None = None) -> str:
         if path and count:
             attrs.append(f'color="{"#F59E0B" if retry else TEAL}" penwidth=2.4 fontcolor="#E5E7EB"')
         lines.append(f'{a} -> {b} [{" ".join(attrs)}];')
+    kb_color = "#A78BFA" if path else "#475569"
+    for target in ("planner", "decision", "critic", "reporter"):
+        lines.append(f'kb -> {target} [style=dotted arrowhead=none constraint=false color="{kb_color}"];')
+    lines.append('{rank=same; kb; profiler}')
     lines.append("}")
     return "\n".join(lines)
 
@@ -254,7 +264,9 @@ if res is None:
             "4. **Decision Agent** applies a fixed policy: No action · Alert · Retrain · Fix pipeline\n"
             "5. **Critic** validates the evidence and decision — retries up to 2× or escalates\n"
             "6. **Reporter / Action** writes the report, alerts the right team and trains a challenger\n"
-            "7. **Human** approves before any new model is deployed"
+            "7. **Human** approves before any new model is deployed\n\n"
+            f"📚 Agents retrieve and cite a **knowledge base** of {len(get_kb())} documents "
+            "(drift concepts, decision policy, runbooks, lending domain) and remember past runs."
         )
         st.info("👈 Pick a scenario in the sidebar and press **Run Watchdog**.")
         st.markdown("#### Scenarios")
@@ -301,8 +313,9 @@ alert = res["alert"]
 banner = st.error if alert["level"] == "high" else (st.warning if alert["level"] == "warning" else st.success)
 banner(f"**{alert['title']}** → routed to {alert['route']}")
 
-tab_trace, tab_drift, tab_dec, tab_rep, tab_val = st.tabs(
-    ["🧭 Agent Trace", "📡 Drift Analysis", "🛡️ Decision & Critic", "📝 Report & Action", "✅ Validation"])
+tab_trace, tab_drift, tab_dec, tab_rep, tab_kb, tab_val = st.tabs(
+    ["🧭 Agent Trace", "📡 Drift Analysis", "🛡️ Decision & Critic", "📝 Report & Action", "📚 Knowledge Base",
+     "✅ Validation"])
 
 # ---------------------------------------------------------------------------
 # Tab 1 — Agent trace
@@ -328,7 +341,9 @@ with tab_trace:
                 f'<div class="mdw-step-head"><span class="mdw-step-agent">{e["step"]}. {e["icon"]} {e["agent"]} '
                 f'<span class="mdw-step-meta">· {e["role"]}</span></span>'
                 f'<span>{pill(e["action"], color)}<span class="mdw-step-meta">+{e["t_ms"]} ms</span></span></div>'
-                f'<div class="mdw-step-body">{md_inline(e["summary"])}</div></div>',
+                f'<div class="mdw-step-body">{md_inline(e["summary"])}</div>'
+                + (f'<div style="margin-top:6px">{"".join(pill("📚 " + k, "#A78BFA") for k in e.get("kb", []))}</div>'
+                   if e.get("kb") else "") + '</div>',
                 unsafe_allow_html=True)
         if res.get("human_action"):
             h = res["human_action"]
@@ -560,6 +575,65 @@ with tab_rep:
         st.dataframe(pd.DataFrame(ss.registry).rename(columns={"version": "Version", "deployed": "Deployed", "source": "Trained on",
                                                                 "auc": "AUC", "approved_by": "Approved by"}),
                      hide_index=True, width="stretch")
+
+# ---------------------------------------------------------------------------
+# Tab — Knowledge base
+# ---------------------------------------------------------------------------
+with tab_kb:
+    kb = get_kb()
+    refs = res.get("kb_refs", [])
+    st.markdown("#### Knowledge used in this run")
+    st.caption(f"The agents retrieved {len({r['id'] for r in refs})} of {len(kb)} documents with TF-IDF search "
+               "and cited them in their steps. Retrieval explains and guides actions; it never changes a decision.")
+    rb = res.get("runbook_id")
+    if rb:
+        doc = kb.get(rb)
+        steps = "".join(f"<li>{md_inline(x)}</li>" for x in doc.steps)
+        st.markdown(f'<div class="mdw-card" style="border-left:4px solid #A78BFA; margin-bottom:12px">'
+                    f'<b>📘 Runbook followed: {doc.id} — {html.escape(doc.title)}</b>'
+                    f'<ol style="margin:6px 0 0 0">{steps}</ol></div>', unsafe_allow_html=True)
+    if refs:
+        st.dataframe(pd.DataFrame([{"ID": r["id"], "Title": r["title"], "Category": r["category"],
+                                    "Cited by": r["agent"], "Why": r["reason"], "Match score": r["score"]} for r in refs]),
+                     hide_index=True, width="stretch")
+        for doc_id in sorted({r["id"] for r in refs}):
+            d = kb.get(doc_id)
+            with st.expander(f"{d.id} — {d.title}"):
+                st.markdown(re.sub(r"^# .*\n", "", d.body))
+
+    c1, c2 = st.columns([1.2, 1])
+    with c1:
+        st.markdown("#### Search the knowledge base")
+        q = st.text_input("Ask about drift, policy or what to do", value="what to do when data is missing",
+                          key="kb_query")
+        cat = st.selectbox("Category", ["all"] + CATEGORIES, key="kb_cat")
+        hits = kb.search(q, k=5, category=None if cat == "all" else cat) if q.strip() else []
+        if not hits:
+            st.caption("No matching documents.")
+        for d, score in hits:
+            with st.expander(f"{d.id} — {d.title}  ·  score {score:.2f}"):
+                st.caption(f"{d.category} · tags: {', '.join(d.tags)} · `{d.path}`")
+                st.markdown(re.sub(r"^# .*\n", "", d.body))
+    with c2:
+        st.markdown("#### Agent memory")
+        mem = load_memory()
+        if res.get("memory_hits"):
+            st.success(f"The Reporter recalled {len(res['memory_hits'])} similar past run(s) for this result.")
+        if mem:
+            st.dataframe(pd.DataFrame(mem[::-1][:15]).rename(columns={
+                "time": "Time", "scenario": "Scenario", "decision": "Decision", "drifted": "Drifted features",
+                "retries": "Retries", "escalated": "Escalated", "rows": "Rows"}), hide_index=True, width="stretch")
+            if st.button("Clear memory", key="clear_mem"):
+                clear_memory()
+                st.rerun()
+        else:
+            st.caption("No runs remembered yet. Turn on *Agent memory* in Demo controls and run a few scenarios.")
+        st.markdown("#### Browse")
+        for c in CATEGORIES:
+            docs = [d for d in kb.docs if d.category == c]
+            with st.expander(f"{c.title()} ({len(docs)})"):
+                for d in docs:
+                    st.markdown(f"**{d.id}** — {d.title}")
 
 # ---------------------------------------------------------------------------
 # Tab 5 — Validation

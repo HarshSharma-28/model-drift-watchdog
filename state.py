@@ -25,6 +25,7 @@ class WatchdogState(TypedDict, total=False):
     labels_available: bool              # do we already know true outcomes?
     use_llm: bool                       # try Ollama for explanations
     inject_faulty_decision: bool        # demo: Decision agent makes a naive first call
+    use_memory: bool                    # read/write run history (agent memory)
 
     # ---- Planner -----------------------------------------------------------
     plan: list[dict[str, str]]
@@ -64,6 +65,11 @@ class WatchdogState(TypedDict, total=False):
     model_comparison: Optional[dict[str, Any]]
     challenger: Any
 
+    # ---- Knowledge base & memory -------------------------------------------
+    kb_refs: list[dict[str, Any]]       # documents retrieved and cited by agents
+    memory_hits: list[dict[str, Any]]   # similar past runs recalled by the Reporter
+    runbook_id: Optional[str]           # runbook followed for the final action
+
     # ---- Bookkeeping -------------------------------------------------------
     trace: list[dict[str, Any]]
     path: list[str]
@@ -77,6 +83,9 @@ def initial_state(**inputs: Any) -> WatchdogState:
         "labels_available": True,
         "use_llm": True,
         "inject_faulty_decision": False,
+        "use_memory": False,
+        "kb_refs": [],
+        "memory_hits": [],
         "replanned": False,
         "bootstrap_features": [],
         "decision_round": 0,

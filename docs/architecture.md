@@ -100,6 +100,22 @@ conditional edges and are shared with a plain-Python fallback runner, so both en
 | Critic | approve or escalate | Reporter |
 | Critic | retry | Profiler / Detector / Decision |
 
+## Knowledge base and memory
+
+`knowledge.py` indexes the 21 documents in `knowledge_base/` with TF-IDF and exposes `cite()`, which retrieves the best
+document for a query and records a citation (document, agent, reason, match score) in the shared state (`kb_refs`).
+
+| Agent | Retrieves | Why |
+|---|---|---|
+| Planner | C-03 KS, C-04 Chi-square, C-02 PSI (+ D-02 if no labels); RB-04 on re-plan | Justify the chosen tests; route broken data |
+| Drift Detector | C-06 prediction drift, C-07 bootstrap | Explain the extra checks it ran |
+| Decision Agent | P-01 policy, P-02 critical features | The rule that fired |
+| Critic Agent | P-03 critic rules; RB-05 on escalation | Its validation rules |
+| Reporter / Action | Runbook for the final action (RB-01…RB-05), C-01, D-04, C-08, P-04 | Recommended steps, references, explanation context for the LLM |
+
+The Reporter also reads and writes **agent memory** (`data/memory.jsonl`): it recalls past runs with the same decision
+and overlapping drifted features, then saves the current run. Retrieval and memory never change a decision.
+
 ## Decision policy
 
 | Condition | Decision |

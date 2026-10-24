@@ -15,6 +15,7 @@ from __future__ import annotations
 import pandas as pd
 
 from agents.common import log
+from knowledge import cite
 from policy import TARGET
 
 
@@ -61,11 +62,24 @@ def plan(state: dict) -> dict:
         + ("Labels are available, so a performance check is added." if labels
            else "No labels yet, so monitoring relies on input and prediction drift only.")
     )
+    refs, used = state.get("kb_refs", []), []
+    if numeric:
+        refs, i = cite(refs, "Planner", "KS test for numeric feature drift", "Chose KS test for numeric features")
+        used.append(i)
+    if categorical:
+        refs, i = cite(refs, "Planner", "chi-square test categorical feature drift", "Chose Chi-square for categorical features")
+        used.append(i)
+    refs, i = cite(refs, "Planner", "PSI population stability index severity", "PSI measures size of drift for all features")
+    used.append(i)
+    if not labels:
+        refs, i = cite(refs, "Planner", "label delay outcomes months later", "No labels yet: skip performance check")
+        used.append(i)
     return {
         "plan": tasks,
+        "kb_refs": refs,
         "trace": log(state, "Planner", "Built task plan", reasoning, "ok",
                      {"numeric_features": numeric, "categorical_features": categorical,
-                      "labels_available": labels, "tasks": len(tasks)}),
+                      "labels_available": labels, "tasks": len(tasks)}, kb=used),
         "path": state.get("path", []) + ["planner"],
     }
 
@@ -81,14 +95,17 @@ def replan(state: dict) -> dict:
             t["task"] = t["task"] + " — skipped (data-quality issue)"
         new_plan.append(t)
     new_plan.insert(1, {"agent": "Planner", "task": "Re-plan: route to Fix-pipeline decision", "status": "done"})
+    refs, i = cite(state.get("kb_refs", []), "Planner", "missing values broken data pipeline incident",
+                   "Data-quality issue: follow the Fix-pipeline runbook", category="runbook")
     return {
         "plan": new_plan,
         "replanned": True,
+        "kb_refs": refs,
         "trace": log(
             state, "Planner", "Re-planned",
             "Data-quality issue found (" + "; ".join(issues) + "). Drift tests on corrupted data "
             "would be misleading, so they are skipped and the run goes straight to the Decision agent.",
-            "warn", {"issues": issues},
+            "warn", {"issues": issues}, kb=[i],
         ),
         "path": state.get("path", []) + ["replanner"],
     }

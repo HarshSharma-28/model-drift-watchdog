@@ -19,6 +19,7 @@ import pandas as pd
 from scipy import stats
 
 from agents.common import log
+from knowledge import cite
 from data_gen import FEATURES, evaluate
 from policy import (CRITICAL_FEATURES, MAX_ACCURACY_DROP, P_VALUE_ALPHA, PSI_MAJOR,
                     PSI_MODERATE, TARGET)
@@ -172,13 +173,22 @@ def detect(state: dict) -> dict:
             summary += f" Accuracy {performance['current_accuracy']:.1%} vs baseline {performance['baseline_accuracy']:.1%}."
     status = "warn" if major or moderate or prediction_drift["severity"] != "stable" else "ok"
 
+    refs, used = state.get("kb_refs", []), []
+    if prediction_drift["severity"] != "stable":
+        refs, i = cite(refs, "Drift Detector", "prediction drift risk scores", "Model scores shifted")
+        used.append(i)
+    if rechecking and bootstrap_for:
+        refs, i = cite(refs, "Drift Detector", "bootstrap re-check disagreement", "Critic requested a bootstrap re-check")
+        used.append(i)
+
     return {
         "drift_table": table,
         "prediction_drift": prediction_drift,
         "performance": performance,
+        "kb_refs": refs,
         "retry_target": None if rechecking else state.get("retry_target"),
         "trace": log(state, "Drift Detector", action, summary, status,
                      {"major": major, "moderate": moderate, "prediction_psi": round(pred_psi, 4),
-                      "accuracy_drop": round(performance["accuracy_drop"], 4) if performance else None}),
+                      "accuracy_drop": round(performance["accuracy_drop"], 4) if performance else None}, kb=used),
         "path": state.get("path", []) + ["detector"],
     }

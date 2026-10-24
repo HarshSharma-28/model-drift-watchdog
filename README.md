@@ -10,7 +10,7 @@
 ![License](https://img.shields.io/badge/License-MIT-green)
 ![Status](https://img.shields.io/badge/Status-Working%20PoC-22C55E)
 [![Open in Streamlit](https://static.streamlit.io/badges/streamlit_badge_black_white.svg)](https://model-drift-watchdog.streamlit.app/)
-![Tests](https://img.shields.io/badge/tests-25%20passing-22C55E)
+![Tests](https://img.shields.io/badge/tests-39%20passing-22C55E)
 
 ### 🚀 Live demo: **[model-drift-watchdog.streamlit.app](https://model-drift-watchdog.streamlit.app/)**
 
@@ -35,13 +35,14 @@
 5. [Architecture](#5-architecture)
 6. [Decision policy and Critic rules](#6-decision-policy-and-critic-rules)
 7. [Demo scenarios (synthetic data)](#7-demo-scenarios-synthetic-data)
-8. [Tech stack](#8-tech-stack)
-9. [Project structure](#9-project-structure)
-10. [Getting started](#10-getting-started)
-11. [Validation and results](#11-validation-and-results)
-12. [Limitations and future scope](#12-limitations-and-future-scope)
-13. [Roadmap](#13-roadmap)
-14. [Demo guide (5-minute presentation)](#14-demo-guide-5-minute-presentation)
+8. [Knowledge base and memory](#8-knowledge-base-and-memory)
+9. [Tech stack](#9-tech-stack)
+10. [Project structure](#10-project-structure)
+11. [Getting started](#11-getting-started)
+12. [Validation and results](#12-validation-and-results)
+13. [Limitations and future scope](#13-limitations-and-future-scope)
+14. [Roadmap](#14-roadmap)
+15. [Demo guide (5-minute presentation)](#15-demo-guide-5-minute-presentation)
 
 ---
 
@@ -103,6 +104,7 @@ flowchart TD
     ESC["⚠️ Escalate to human"]
     R["📝 Reporter / Action Agent<br/>report · alert · champion vs challenger"]
     H["👤 Human approval"]
+    KB[("📚 Knowledge Base<br/>concepts · policy · runbooks · domain")]
     END["✅ Deploy new model / close incident"]
 
     UI -->|"request + new data batch"| P
@@ -119,10 +121,14 @@ flowchart TD
     C -->|"approved"| R
     R --> H
     H --> END
+    KB -.->|"cited"| P
+    KB -.->|"cited"| DA
+    KB -.->|"cited"| C
+    KB -.->|"runbook"| R
 ```
 
 **Data:** `reference` training data · production batch (per scenario) · champion model
-**Tools:** pandas · NumPy · SciPy (KS, Chi²) · custom PSI · scikit-learn · Plotly · LangGraph · Ollama / mock LLM
+**Tools:** pandas · NumPy · SciPy (KS, Chi²) · custom PSI · scikit-learn · TF-IDF knowledge retrieval · Plotly · LangGraph · Ollama / mock LLM
 
 More detail: [`docs/architecture.md`](docs/architecture.md)
 
@@ -171,7 +177,29 @@ Features: `age`, `monthly_income`, `loan_amount`, `credit_score`, `employment_ty
 
 Scenario 4 is the key test: a naive system would retrain on broken data — our agents don't.
 
-## 8. Tech stack
+## 8. Knowledge base and memory
+
+The agents work with a **knowledge base** of 21 Markdown documents in [`knowledge_base/`](knowledge_base/README.md):
+
+| Category | Documents |
+|---|---|
+| Concepts | C-01 Data drift · C-02 PSI · C-03 KS test · C-04 Chi-square · C-05 Concept drift · C-06 Prediction drift · C-07 Bootstrap · C-08 Champion vs challenger |
+| Policy | P-01 Decision policy · P-02 Critical features · P-03 Critic rules · P-04 Deployment rule |
+| Runbooks | RB-01 No action · RB-02 Alert · RB-03 Retrain · RB-04 Fix pipeline · RB-05 Escalation |
+| Domain | D-01 Credit risk · D-02 Label delay · D-03 Audit & explainability · D-04 Gig-worker applicants |
+
+**How it is used** ([`knowledge.py`](knowledge.py)):
+- Documents are indexed with **TF-IDF** (scikit-learn — free, local, no API). Agents retrieve them with natural-language queries.
+- **Planner** cites the test concepts it chose (C-02/C-03/C-04, D-02 when there are no labels); on bad data it re-plans with **RB-04**.
+- **Drift Detector** cites C-06 (prediction drift) and C-07 (bootstrap) when used.
+- **Decision Agent** cites the policy (P-01, P-02); **Critic** cites its rules (P-03) and **RB-05** when escalating.
+- **Reporter** retrieves the **runbook for the final action** and turns its steps into the report's *Recommended steps*, adds a References list, and passes the runbook to the LLM (retrieval-augmented explanation).
+- **Agent memory:** each run is saved to `data/memory.jsonl`; the Reporter recalls similar past runs.
+- Retrieval and memory never change a decision — decisions still come from `policy.py`, so results stay 8/8.
+
+The **📚 Knowledge Base** tab shows the runbook followed, every citation (which agent, why, match score), a search box and the run memory.
+
+## 9. Tech stack
 
 | Layer | Technology |
 |---|---|
@@ -181,12 +209,13 @@ Scenario 4 is the key test: a naive system would retrain on broken data — our 
 | Statistics | SciPy (KS, Chi-square), custom PSI |
 | ML | scikit-learn (Random Forest champion / challenger) |
 | Data | pandas, NumPy (synthetic generator) |
+| Knowledge base | Markdown docs + TF-IDF retrieval (scikit-learn), JSONL run memory |
 | Charts | Plotly |
 | LLM (optional) | Ollama local model for explanations, template-based mock fallback |
 
 No paid APIs are used.
 
-## 9. Project structure
+## 10. Project structure
 
 ```
 model-drift-watchdog/
@@ -197,6 +226,8 @@ model-drift-watchdog/
 ├── graph.py                # LangGraph orchestration (+ identical fallback runner)
 ├── runner.py               # Builds the inputs for one run and executes it
 ├── llm.py                  # Ollama client + mock LLM fallback
+├── knowledge.py            # Knowledge-base retriever (TF-IDF) + agent memory
+├── knowledge_base/         # 21 docs: concepts, policy, runbooks, domain
 ├── validation.py           # Validation suite (also runs from the UI)
 ├── agents/
 │   ├── planner.py          # Planner Agent — plan + re-plan
@@ -206,14 +237,14 @@ model-drift-watchdog/
 │   ├── critic.py           # Critic Agent — 5 checks, retries, escalation
 │   ├── reporter.py         # Reporter / Action — report, alert, incident, retrain
 │   └── common.py           # Trace logging helpers
-├── tests/                  # 25 pytest tests (all scenarios + Critic loop)
+├── tests/                  # 39 pytest tests (scenarios, Critic loop, knowledge base)
 ├── docs/                   # Problem statement, architecture, validation, demo guide
 ├── presentation/           # PPT for the CA-3 presentation
 ├── .streamlit/config.toml  # Dark theme
 └── requirements.txt
 ```
 
-## 10. Getting started
+## 11. Getting started
 
 ```bash
 # 1. Clone
@@ -239,7 +270,7 @@ The app opens at http://localhost:8501. The first load takes a few seconds while
 **Run the tests and the validation suite**
 
 ```bash
-python -m pytest -q        # 25 tests
+python -m pytest -q        # 39 tests
 python validation.py       # prints the results tables below
 ```
 
@@ -262,6 +293,7 @@ Use `OLLAMA_MODEL` / `OLLAMA_URL` environment variables to pick a different mode
 | Use local LLM (Ollama) | Plain-English explanation from Ollama; falls back to the mock |
 | Demo controls → Batch size | Below 500 rows the Critic asks for a wider window; 100 rows escalates |
 | Demo controls → Inject a faulty first decision | The Decision agent's first call is naive — watch the Critic catch it |
+| Demo controls → Agent memory | Save runs and recall similar past runs |
 | Demo controls → Orchestrator | LangGraph or the plain-Python fallback (identical results) |
 
 | Tab | Shows |
@@ -269,7 +301,8 @@ Use `OLLAMA_MODEL` / `OLLAMA_URL` environment variables to pick a different mode
 | 🧭 Agent Trace | The path taken through the graph (retries highlighted), the task plan and every agent step |
 | 📡 Drift Analysis | PSI per feature, prediction drift, test table with p-values, distributions, performance |
 | 🛡️ Decision & Critic | Decision, rule fired, evidence, policy table, every Critic round with pass/fail |
-| 📝 Report & Action | Plain-English summary, report download, alert, incident, champion vs challenger, **Approve / Reject**, model registry |
+| 📝 Report & Action | Plain-English summary, report with runbook steps and references, alert, incident, champion vs challenger, **Approve / Reject**, model registry |
+| 📚 Knowledge Base | Runbook followed, documents cited by each agent, KB search, agent memory |
 | ✅ Validation | Runs the full validation suite against ground truth |
 
 ### Screenshots
@@ -280,7 +313,7 @@ Use `OLLAMA_MODEL` / `OLLAMA_URL` environment variables to pick a different mode
 | **Decision & Critic (Pipeline bug + injected fault)** | **Report & Action (champion vs challenger)** |
 | ![Decision and Critic](docs/screenshots/3_decision_critic.png) | ![Report and action](docs/screenshots/4_report_action.png) |
 
-## 11. Validation and results
+## 12. Validation and results
 
 Every scenario has a known, injected change, so the agents' output is checked against ground truth
 (`python validation.py`, or the **Validation** tab).
@@ -313,7 +346,7 @@ Key observations:
 
 Details: [`docs/validation_plan.md`](docs/validation_plan.md)
 
-## 12. Limitations and future scope
+## 13. Limitations and future scope
 
 **Limitations**
 - Synthetic data only
@@ -329,7 +362,7 @@ Details: [`docs/validation_plan.md`](docs/validation_plan.md)
 - Slack / email alerts via MCP
 - Canary rollout of new models and adaptive thresholds
 
-## 13. Roadmap
+## 14. Roadmap
 
 - [x] Problem statement, domain and architecture finalised
 - [x] Repository and project structure set up
@@ -339,9 +372,11 @@ Details: [`docs/validation_plan.md`](docs/validation_plan.md)
 - [x] Streamlit UI: agent trace, drift analysis, decision & critic, report & action, validation
 - [x] Ollama integration with mock fallback
 - [x] Validation run across all scenarios (8/8 decisions, 7/7 robustness tests)
+- [x] Knowledge base (21 docs) with TF-IDF retrieval, agent citations and run memory
+- [x] Deployed on Streamlit Community Cloud
 - [ ] Final presentation and demo
 
-## 14. Demo guide (5-minute presentation)
+## 15. Demo guide (5-minute presentation)
 
 See [`docs/demo_guide.md`](docs/demo_guide.md) for a click-by-click script. In short:
 1. **Normal week** → ✅ No action (show the clean path in Agent Trace)

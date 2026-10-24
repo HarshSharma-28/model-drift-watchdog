@@ -31,6 +31,7 @@ def run_scenario(
     batch_size: int = 1000,
     use_llm: bool = True,
     inject_faulty_decision: bool = False,
+    use_memory: bool = False,
     engine: str = "auto",
     champion=None,
     baseline: dict | None = None,
@@ -51,5 +52,6 @@ def run_scenario(
         labels_available=labels_available,
         use_llm=use_llm,
         inject_faulty_decision=inject_faulty_decision,
+        use_memory=use_memory,
     )
     return run_watchdog(state, engine=engine)

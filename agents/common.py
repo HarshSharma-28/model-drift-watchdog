@@ -23,6 +23,7 @@ def log(
     summary: str,
     status: str = "ok",
     details: dict[str, Any] | None = None,
+    kb: list[str] | None = None,
 ) -> list[dict[str, Any]]:
     """Return the trace with one new entry appended (never mutates the input)."""
     trace = list(state.get("trace", []))
@@ -37,6 +38,7 @@ def log(
             "summary": summary,
             "status": status,  # ok | warn | fail | retry | info
             "details": details or {},
+            "kb": [k for k in (kb or []) if k],
             "t_ms": round((time.perf_counter() - state.get("started_at", time.perf_counter())) * 1000),
         }
     )

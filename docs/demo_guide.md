@@ -14,6 +14,9 @@ Keep the sidebar open. Leave "True loan outcomes available" **on**.
 
 ## Backup demos (if asked)
 
+- **📚 Knowledge Base tab** (after any run) → shows the runbook the agents followed (e.g. RB-03 Retrain), every document
+  each agent cited and why, a search box, and the agent memory of past runs.
+
 - **Gradual drift** → the Critic spots that `loan_amount` is statistically significant but has a small PSI, and
   sends it back for a bootstrap re-check (orange dashed edge in the graph) → ⚠️ Alert.
 - **Batch size 100** (Demo controls) with Sudden drift → the window widens twice, still under 500 rows →
@@ -43,3 +46,8 @@ model from broken inputs. The correct action is to fix the feed.
 
 **How do you know the retrained model is better?** It is evaluated on 2,000 fresh rows it never saw, must beat the
 champion's AUC by ≥ 0.01, and still needs human approval.
+
+**What is your knowledge base?** 21 documents (drift concepts, decision policy, runbooks, lending domain) indexed with
+TF-IDF. Agents retrieve and cite them: the Planner cites the tests it chose, the Decision agent and Critic cite the
+policy, and the Reporter retrieves the runbook for the final action and turns it into the recommended steps. Past runs
+are stored as agent memory. Retrieval guides and explains actions but never changes a decision.
