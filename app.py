@@ -7,6 +7,7 @@ Run with:
 from __future__ import annotations
 
 import html
+import os
 import re
 import time
 from collections import Counter
@@ -21,7 +22,7 @@ from agents.common import AGENT_META
 from data_gen import SCENARIOS, evaluate
 from graph import LANGGRAPH_AVAILABLE
 from knowledge import CATEGORIES, clear_memory, get_kb, load_memory
-from llm import OLLAMA_MODEL, ollama_status
+from llm import SYSTEM_PROMPT, chat, llm_status, source_label
 from policy import (ALERT, CRITICAL_FEATURES, FIX_PIPELINE, MAX_ACCURACY_DROP, MAX_MISSING_RATE,
                     MAX_RETRIES, MIN_AUC_GAIN, MIN_SAMPLE_SIZE, NO_ACTION, P_VALUE_ALPHA,
                     PSI_MAJOR, PSI_MODERATE, RETRAIN)
@@ -29,6 +30,14 @@ from runner import load_context, run_scenario
 from validation import robustness_runs, scenario_runs
 
 st.set_page_config(page_title="Model Drift Watchdog", page_icon="🛰️", layout="wide")
+
+# Streamlit secrets (Streamlit Cloud: Settings → Secrets; locally: .streamlit/secrets.toml) → environment
+try:
+    for _k in ("GROQ_API_KEY", "GROQ_MODEL"):
+        if _k in st.secrets and not os.environ.get(_k):
+            os.environ[_k] = str(st.secrets[_k])
+except Exception:
+    pass
 
 # ---------------------------------------------------------------------------
 # Look & feel
@@ -108,11 +117,6 @@ def context():
     return load_context()
 
 
-@st.cache_data(ttl=30, show_spinner=False)
-def llm_status():
-    return ollama_status()
-
-
 reference_df, original_champion, reference_test_df, original_baseline = context()
 
 ss = st.session_state
@@ -137,14 +141,21 @@ with st.sidebar:
     labels = st.toggle("True loan outcomes available", value=True,
                        help="In lending, whether a loan defaults is known only months later. "
                             "Turn off to monitor with input and prediction drift only.")
+    use_llm = st.toggle("Use LLM for reports and chat", value=True)
     status = llm_status()
-    use_llm = st.toggle("Use local LLM (Ollama) for explanations", value=True)
-    if status["available"]:
-        st.caption(f"🟢 Ollama connected · `{OLLAMA_MODEL}`")
-    elif status["server"]:
-        st.caption(f"🟡 Ollama running but `{OLLAMA_MODEL}` not pulled — using mock LLM")
+    if status["provider"] == "mock":
+        st.caption(f"⚪ {status['label']} — {status['detail']}")
+        with st.expander("Connect a free LLM"):
+            key_in = st.text_input("Groq API key", type="password",
+                                   help="Free key from console.groq.com → API Keys. Used only by this running app; "
+                                        "for the cloud deployment put it in Streamlit Secrets instead.")
+            if key_in:
+                os.environ["GROQ_API_KEY"] = key_in.strip()
+                llm_status(force=True)
+                st.rerun()
+            st.caption("Or install Ollama (ollama.com) and run `ollama pull llama3.2:3b`.")
     else:
-        st.caption("⚪ Ollama not running — mock LLM will write explanations")
+        st.caption(f"🟢 {status['label']} — {status['detail']}")
 
     with st.expander("Demo controls (Critic loop)"):
         batch_size = st.slider("Batch size (rows)", 100, 1000, 1000, 50,
@@ -313,8 +324,9 @@ alert = res["alert"]
 banner = st.error if alert["level"] == "high" else (st.warning if alert["level"] == "warning" else st.success)
 banner(f"**{alert['title']}** → routed to {alert['route']}")
 
-tab_trace, tab_drift, tab_dec, tab_rep, tab_kb, tab_val = st.tabs(
+tab_trace, tab_drift, tab_dec, tab_rep, tab_kb, tab_chat, tab_val = st.tabs(
     ["🧭 Agent Trace", "📡 Drift Analysis", "🛡️ Decision & Critic", "📝 Report & Action", "📚 Knowledge Base",
+     "💬 Ask the Watchdog",
      "✅ Validation"])
 
 # ---------------------------------------------------------------------------
@@ -502,8 +514,8 @@ with tab_rep:
     c1, c2 = st.columns([1.15, 1])
     with c1:
         src = res["explanation_source"]
-        st.markdown("#### Plain-English summary " + pill("Ollama · " + src.split(":", 1)[1] if src.startswith("ollama") else "Mock LLM (template)",
-                                                         TEAL if src.startswith("ollama") else MUTED), unsafe_allow_html=True)
+        st.markdown("#### Incident summary " + pill(("🤖 " if src != "mock" else "") + source_label(src),
+                                                     TEAL if src != "mock" else MUTED), unsafe_allow_html=True)
         st.markdown(res["explanation"])
         st.markdown("#### Drift report")
         with st.container(border=True):
@@ -634,6 +646,75 @@ with tab_kb:
             with st.expander(f"{c.title()} ({len(docs)})"):
                 for d in docs:
                     st.markdown(f"**{d.id}** — {d.title}")
+
+# ---------------------------------------------------------------------------
+# Tab — Ask the Watchdog (RAG chat over this run + knowledge base)
+# ---------------------------------------------------------------------------
+def _strip_title(body: str) -> str:
+    return re.sub(r"^# .*\n", "", body)
+
+
+def _run_context(r: dict) -> str:
+    q = r["quality_report"]
+    lines = [f"Scenario: {r['scenario']}", f"Decision: {r['decision']} (rule: {r['decision_rule']})",
+             "Evidence: " + "; ".join(e.replace("`", "") for e in r["decision_evidence"]),
+             f"Rows checked: {q['rows']}", f"Data quality OK: {q['data_ok']}" + ("" if q["data_ok"] else " — " + "; ".join(q["issues"]))]
+    if q["data_ok"] and r.get("drift_table"):
+        lines.append("Feature drift: " + "; ".join(
+            f"{x['feature']} PSI {x['psi']:.3f} {x['severity']} ({x['test']} p={x['p_value']:.2g})" for x in r["drift_table"]))
+        lines.append(f"Prediction PSI: {r['prediction_drift']['psi']:.3f}")
+    if r.get("performance"):
+        p = r["performance"]
+        lines.append(f"Accuracy {p['current_accuracy']:.1%} vs baseline {p['baseline_accuracy']:.1%}; AUC {p['current_auc']:.3f} vs {p['baseline_auc']:.3f}")
+    for h in r["critic_history"]:
+        lines.append(f"Critic round {h['round']}: {h['verdict']} — failed: " +
+                     (", ".join(c["check"] for c in h["checks"] if c["passed"] is False) or "none"))
+    if r.get("model_comparison"):
+        c = r["model_comparison"]
+        lines.append(f"Champion AUC {c['champion']['auc']:.3f} vs challenger {c['challenger']['auc']:.3f} on fresh data (gain {c['auc_gain']:+.3f})")
+    lines.append("Runbook followed: " + str(r.get("runbook_id")))
+    lines.append("Agent path: " + " > ".join(r["path"]))
+    return "\n".join(lines)
+
+
+with tab_chat:
+    st.markdown("#### 💬 Ask the Watchdog")
+    status = llm_status()
+    st.caption(("🟢 Answers by " + status["label"] if status["provider"] != "mock" else
+                "⚪ No LLM connected — answers show the retrieved knowledge only. Connect Groq or Ollama in the sidebar.")
+               + " · Grounded in this run's results and the knowledge base.")
+    run_key = f"chat_{id(res)}"
+    ss.setdefault(run_key, [])
+    examples = ["Why did you take this decision?", "What is PSI and why does it matter here?",
+                "What should the team do next?", "Did the Critic find any problems?"]
+    cols = st.columns(len(examples))
+    clicked = None
+    for c, ex in zip(cols, examples):
+        if c.button(ex, key=f"{run_key}_{ex}", width="stretch"):
+            clicked = ex
+    for m in ss[run_key]:
+        with st.chat_message(m["role"]):
+            st.markdown(m["content"])
+    question = st.chat_input("Ask about this run, drift, the policy or what to do…") or clicked
+    if question:
+        ss[run_key].append({"role": "user", "content": question})
+        hits = get_kb().search(question, k=3)
+        kb_text = "\n\n".join(f"[{d.id}] {d.title}:\n" + _strip_title(d.body)[:1500] for d, _ in hits)
+        messages = [{"role": "system", "content": SYSTEM_PROMPT + " Answer the user's question in under 150 words."},
+                    {"role": "user", "content": f"RUN RESULTS:\n{_run_context(res)}\n\nKNOWLEDGE BASE:\n{kb_text}\n\n"
+                                                f"QUESTION: {question}"}]
+        for m in ss[run_key][-7:-1]:
+            messages.insert(-1, {"role": m["role"], "content": m["content"]})
+        with st.spinner("Thinking…"):
+            out = chat(messages, max_tokens=350) if use_llm else None
+        if out:
+            answer = out[0] + f"\n\n<sub>🤖 {source_label(out[1])} · sources: " + ", ".join(d.id for d, _ in hits) + "</sub>"
+        else:
+            answer = ("**No LLM connected — here is what the knowledge base says:**\n\n" +
+                      "\n\n".join(f"**[{d.id}] {d.title}** — {d.summary}" for d, _ in hits) +
+                      f"\n\n**This run:** {res['decision']} — {res['decision_rule']}.")
+        ss[run_key].append({"role": "assistant", "content": answer})
+        st.rerun()
 
 # ---------------------------------------------------------------------------
 # Tab 5 — Validation

@@ -21,7 +21,7 @@ import pandas as pd
 from agents.common import fmt_pct, log
 from data_gen import FEATURES, build_model, evaluate, generate_holdout
 from knowledge import cite, get_kb, recall, remember
-from llm import explain
+from llm import explain, source_label
 from policy import ALERT, FIX_PIPELINE, MIN_AUC_GAIN, NO_ACTION, RETRAIN, TARGET
 
 RECENT_WEIGHT = 3.0   # recent rows count 3x when retraining
@@ -229,7 +229,7 @@ def report(state: dict) -> dict:
         summary += f" Followed Runbook {runbook.id}."
     if memory_hits:
         summary += f" Memory: {len(memory_hits)} similar past run(s)."
-    summary += f" Explanation by {'Ollama' if source.startswith('ollama') else 'mock LLM'}."
+    summary += f" Incident summary by {source_label(source)}."
 
     return {
         "report": _report_markdown(state, comparison, runbook, refs, memory_hits),

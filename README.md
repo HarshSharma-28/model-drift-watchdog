@@ -6,11 +6,11 @@
 ![Streamlit](https://img.shields.io/badge/Streamlit-UI-FF4B4B?logo=streamlit&logoColor=white)
 ![LangGraph](https://img.shields.io/badge/LangGraph-Orchestration-14B8A6)
 ![scikit-learn](https://img.shields.io/badge/scikit--learn-ML-F7931E?logo=scikitlearn&logoColor=white)
-![Ollama](https://img.shields.io/badge/Ollama-optional%20local%20LLM-000000)
+![LLM](https://img.shields.io/badge/LLM-Groq%20%7C%20Ollama-8B5CF6)
 ![License](https://img.shields.io/badge/License-MIT-green)
 ![Status](https://img.shields.io/badge/Status-Working%20PoC-22C55E)
 [![Open in Streamlit](https://static.streamlit.io/badges/streamlit_badge_black_white.svg)](https://model-drift-watchdog.streamlit.app/)
-![Tests](https://img.shields.io/badge/tests-39%20passing-22C55E)
+![Tests](https://img.shields.io/badge/tests-43%20passing-22C55E)
 
 ### 🚀 Live demo: **[model-drift-watchdog.streamlit.app](https://model-drift-watchdog.streamlit.app/)**
 
@@ -128,7 +128,7 @@ flowchart TD
 ```
 
 **Data:** `reference` training data · production batch (per scenario) · champion model
-**Tools:** pandas · NumPy · SciPy (KS, Chi²) · custom PSI · scikit-learn · TF-IDF knowledge retrieval · Plotly · LangGraph · Ollama / mock LLM
+**Tools:** pandas · NumPy · SciPy (KS, Chi²) · custom PSI · scikit-learn · TF-IDF knowledge retrieval · Plotly · LangGraph · Groq / Ollama LLM
 
 More detail: [`docs/architecture.md`](docs/architecture.md)
 
@@ -211,7 +211,7 @@ The **📚 Knowledge Base** tab shows the runbook followed, every citation (whic
 | Data | pandas, NumPy (synthetic generator) |
 | Knowledge base | Markdown docs + TF-IDF retrieval (scikit-learn), JSONL run memory |
 | Charts | Plotly |
-| LLM (optional) | Ollama local model for explanations, template-based mock fallback |
+| LLM | **Groq** free cloud API (Llama 3.3 70B) or **Ollama** local model; template fallback only if neither is reachable |
 
 No paid APIs are used.
 
@@ -225,7 +225,7 @@ model-drift-watchdog/
 ├── state.py                # Shared state passed between agents
 ├── graph.py                # LangGraph orchestration (+ identical fallback runner)
 ├── runner.py               # Builds the inputs for one run and executes it
-├── llm.py                  # Ollama client + mock LLM fallback
+├── llm.py                  # LLM chain: Groq → Ollama → template fallback
 ├── knowledge.py            # Knowledge-base retriever (TF-IDF) + agent memory
 ├── knowledge_base/         # 21 docs: concepts, policy, runbooks, domain
 ├── validation.py           # Validation suite (also runs from the UI)
@@ -237,7 +237,7 @@ model-drift-watchdog/
 │   ├── critic.py           # Critic Agent — 5 checks, retries, escalation
 │   ├── reporter.py         # Reporter / Action — report, alert, incident, retrain
 │   └── common.py           # Trace logging helpers
-├── tests/                  # 39 pytest tests (scenarios, Critic loop, knowledge base)
+├── tests/                  # 43 pytest tests (scenarios, Critic loop, knowledge base, LLM chain)
 ├── docs/                   # Problem statement, architecture, validation, demo guide
 ├── presentation/           # PPT for the CA-3 presentation
 ├── .streamlit/config.toml  # Dark theme
@@ -270,18 +270,24 @@ The app opens at http://localhost:8501. The first load takes a few seconds while
 **Run the tests and the validation suite**
 
 ```bash
-python -m pytest -q        # 39 tests
+python -m pytest -q        # 43 tests
 python validation.py       # prints the results tables below
 ```
 
-**Optional — local LLM explanations with Ollama (free)**
+**Real LLM (free) — pick one**
+
+*Groq (cloud, works on Streamlit Cloud):* create a free key at https://console.groq.com → API Keys, then either
+- Streamlit Cloud → your app → **Settings → Secrets**: `GROQ_API_KEY = "gsk_..."`
+- locally: create `.streamlit/secrets.toml` with the same line (it is git-ignored), or paste the key in the sidebar.
+
+*Ollama (local, on your PC):*
 
 ```bash
 # Install Ollama from https://ollama.com, then:
 ollama pull llama3.2:3b
 ```
 
-If Ollama isn't running, the app automatically uses the mock LLM, so the demo works on any laptop.
+The app uses Groq if a key is set, otherwise Ollama, and only falls back to a template if no LLM is reachable.
 Use `OLLAMA_MODEL` / `OLLAMA_URL` environment variables to pick a different model or server.
 
 ### Using the app
@@ -290,7 +296,7 @@ Use `OLLAMA_MODEL` / `OLLAMA_URL` environment variables to pick a different mode
 |---|---|
 | Production batch scenario | Picks one of the 4 synthetic scenarios |
 | True loan outcomes available | Adds the accuracy/AUC check (off = label delay, input drift only) |
-| Use local LLM (Ollama) | Plain-English explanation from Ollama; falls back to the mock |
+| Use LLM for reports and chat | Incident summary and chat by Groq / Ollama (status shown in the sidebar) |
 | Demo controls → Batch size | Below 500 rows the Critic asks for a wider window; 100 rows escalates |
 | Demo controls → Inject a faulty first decision | The Decision agent's first call is naive — watch the Critic catch it |
 | Demo controls → Agent memory | Save runs and recall similar past runs |
@@ -303,6 +309,7 @@ Use `OLLAMA_MODEL` / `OLLAMA_URL` environment variables to pick a different mode
 | 🛡️ Decision & Critic | Decision, rule fired, evidence, policy table, every Critic round with pass/fail |
 | 📝 Report & Action | Plain-English summary, report with runbook steps and references, alert, incident, champion vs challenger, **Approve / Reject**, model registry |
 | 📚 Knowledge Base | Runbook followed, documents cited by each agent, KB search, agent memory |
+| 💬 Ask the Watchdog | Chat with the LLM about this run — answers grounded in the run results and the knowledge base (RAG) |
 | ✅ Validation | Runs the full validation suite against ground truth |
 
 ### Screenshots
@@ -353,7 +360,7 @@ Details: [`docs/validation_plan.md`](docs/validation_plan.md)
 - Per-feature tests can miss combined (multivariate) drift
 - Fixed thresholds, not learned
 - Label delay not simulated
-- Mock LLM explanations are template-based
+- Without an API key or Ollama, explanations fall back to templates
 
 **Future scope**
 - Scheduled or real-time streaming monitoring
