@@ -8,3 +8,4 @@ langgraph>=0.2
 requests>=2.31
 pytest>=8.0
 # Knowledge-base retrieval uses scikit-learn TF-IDF (no extra package needed)
+# LLM: Groq API (via requests) or local Ollama — no extra package needed
